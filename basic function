@@ -1,0 +1,544 @@
+library(reticulate)
+library(survival)
+library(randomForestSRC)
+library(gbm)
+library(survival)
+library(survivalmodels)
+library(superpc)
+library(obliqueRSF)
+library(partykit)
+library(rpart)
+library(mboost)
+library(ranger)
+library("glmnet")
+library("CoxBoost")
+library("snowfall")
+library(plsRcox)
+library(survivalsvm)
+library(xgboost)
+library(survXgboost)
+
+
+mlr <- function(cohort){seed=123
+step_fit <- step(coxph(Surv(futime,fustat)~.,data = trainset ),dirtion="both") #逐步回归_both
+risk_score_all <- data.frame()
+for (y in 1:length(cohort)) {#id <- paste0("step_",i)
+  cohort[[y]] <- as.data.frame(cohort[[y]])
+  risk_score <-  as.numeric(predict(step_fit, newdata = cohort[[y]][,key_gene]))
+  id=names(predict(step_fit, newdata = cohort[[y]][,key_gene]))
+  risk_score_all <- rbind( risk_score_all,
+                           cbind(algorithm=rep("Step (both)",length(risk_score)),
+                                 data=rep(y,length(risk_score)),
+                                 risk_score=risk_score,
+                                 id=id,
+                                 futime= cohort[[y]][,"futime"],
+                                 fustat= cohort[[y]][,"fustat"])
+  )
+  
+  
+}
+step_fit <- step(coxph(Surv(futime,fustat)~.,data = trainset ),dirtion="forward") #逐步回归_both
+
+for (y in 1:length(cohort)) {#id <- paste0("step_",i)
+  cohort[[y]] <- as.data.frame(cohort[[y]])
+  risk_score <-  as.numeric(predict(step_fit, newdata = cohort[[y]][,key_gene]))
+  id=names(predict(step_fit, newdata = cohort[[y]][,key_gene]))
+  risk_score_all <- rbind( risk_score_all,
+                           cbind(algorithm=rep("Step (forward)",length(risk_score)),
+                                 data=rep(y,length(risk_score)),
+                                 risk_score=risk_score,
+                                 id=id,
+                                 futime= cohort[[y]][,"futime"],
+                                 fustat= cohort[[y]][,"fustat"])
+  )
+  
+  
+}
+step_fit <- step(coxph(Surv(futime,fustat)~.,data = trainset ),dirtion="backward") #逐步回归_both
+
+for (y in 1:length(cohort)) {#id <- paste0("step_",i)
+  cohort[[y]] <- as.data.frame(cohort[[y]])
+  risk_score <-  as.numeric(predict(step_fit, newdata = cohort[[y]][,key_gene]))
+  id=names(predict(step_fit, newdata = cohort[[y]][,key_gene]))
+  risk_score_all <- rbind( risk_score_all,
+                           cbind(algorithm=rep("Step (backward)",length(risk_score)),
+                                 data=rep(y,length(risk_score)),
+                                 risk_score=risk_score,
+                                 id=id,
+                                 futime= cohort[[y]][,"futime"],
+                                 fustat= cohort[[y]][,"fustat"])
+  )
+  
+  
+}
+trainset <- trainset[,c("futime","fustat",key_gene )]
+step_rsf <- rfsrc(Surv(futime,fustat)~.,data = trainset,           #随机森林
+                  ntree = 1000,  
+                  splitrule = 'logrank',
+                  importance = T,
+                  proximity = T,
+                  forest = T,
+                  seed = seed)
+step_rsf_tc <- tune.rfsrc(Surv(futime, fustat) ~ ., data = trainset, ntreeTry = 1000, stepFactor = 1.5)
+step_rsf <- rfsrc(Surv(futime,fustat)~.,data = trainset,
+                  ntree = which.min(step_rsf$err.rate),nodesize = step_rsf_tc$optimal[1], 
+                  mtry=step_rsf_tc$optimal[2],
+                  splitrule = 'logrank',
+                  importance = T,
+                  proximity = T,
+                  forest = T,
+                  seed = seed)#随机森林
+for (y in 1:length(cohort)) {
+  cohort[[y]] <- as.data.frame(cohort[[y]])
+  risk_score <-  as.numeric( predict(step_rsf,cohort[[y]][,key_gene])$predicted)
+  
+  risk_score_all <- rbind( risk_score_all,
+                           cbind(algorithm=rep("RSF",length(risk_score)),
+                                 data=rep(y,length(risk_score)),
+                                 risk_score =risk_score ,
+                                 id=rownames(cohort[[y]]),
+                                 futime= cohort[[y]][,"futime"],
+                                 fustat= cohort[[y]][,"fustat"])
+  )
+}
+step_gbm <- gbm(formula = Surv(futime,fustat)~.,data = trainset ,distribution = 'coxph',
+                n.trees = 5000,
+                interaction.depth = 3,
+                n.minobsinnode = 10,
+                shrinkage = 0.001,
+                cv.folds = 10,n.cores = 1)
+
+best.iter <- gbm.perf(step_gbm, 
+                      plot.it = TRUE, 
+                      oobag.curve = FALSE, 
+                      overlay = TRUE, 
+                      method="cv")
+for (y in 1:length(cohort)) {
+  cohort[[y]] <- as.data.frame(cohort[[y]])
+  risk_score <-  as.numeric( predict(step_gbm,cohort[[y]][,key_gene],best.iter))
+  
+  risk_score_all <- rbind( risk_score_all,
+                           cbind(algorithm=rep("GBM",length(risk_score)),
+                                 data=rep(y,length(risk_score)),
+                                 risk_score =risk_score ,
+                                 id=rownames(cohort[[y]]),
+                                 futime= cohort[[y]][,"futime"],
+                                 fustat= cohort[[y]][,"fustat"])
+  )
+}
+step_Akritas <- akritas(Surv(futime, fustat) ~ ., data = trainset) #akritas  
+for (y in 1:length(cohort)) {
+  cohort[[y]] <- as.data.frame(cohort[[y]])
+  risk_score <-  as.numeric( predict(step_Akritas ,cohort[[y]][,key_gene],type="risk"))
+  
+  risk_score_all <- rbind( risk_score_all,
+                           cbind(algorithm=rep("Akritas",length(risk_score)),
+                                 data=rep(y,length(risk_score)),
+                                 risk_score =risk_score ,
+                                 id=rownames(cohort[[y]]),
+                                 futime= cohort[[y]][,"futime"],
+                                 fustat= cohort[[y]][,"fustat"])
+ )
+}
+data <- list(x=t(trainset[,-c(1,2)]),y=trainset$futime,censoring.status=trainset$fustat,featurenames=colnames(trainset[,-c(1,2)]))
+fit <- superpc.train(data = data,type = 'survival',s0.perc = 0.5) #default
+cv.fit <- superpc.cv(fit,data,n.threshold = 1,#default 
+                     n.fold = 10,
+                     n.components=3,
+                     min.features=3,
+                     max.features=nrow(data$x),
+                     compute.fullcv= TRUE,
+                     compute.preval=TRUE)   #SuperPC
+for (y in 1:length(cohort)) {
+  cohort[[y]] <- as.data.frame(cohort[[y]])
+  test1 <- list(x=t(cohort[[y]][,key_gene]),y=cohort[[y]][,key_gene]$futime,censoring.status=cohort[[y]][,key_gene]$fustat,featurenames=colnames(cohort[[y]][,key_gene]))
+  ff <- superpc.predict(fit,data,test1,threshold = cv.fit$thresholds[which.max(cv.fit[["scor"]][1,])],n.components = 1)
+  risk_score <- as.numeric(ff$v.pred)
+  
+  risk_score_all <- rbind( risk_score_all,
+                           cbind(algorithm=rep("Superpc",length(risk_score)),
+                                 data=rep(y,length(risk_score)),
+                                 risk_score =risk_score ,
+                                 id=rownames(cohort[[y]]),
+                                 futime= cohort[[y]][,"futime"],
+                                 fustat= cohort[[y]][,"fustat"])
+  )
+}
+step_obliqueRSF <-  ORSF(data=trainset,alpha = 0.5,
+                         ntree = 100,
+                         time = "futime",status = "fustat",mtry = ceiling(sqrt(ncol(trainset) - 2)),use.cv = T,random_seed = 123)#obliqueRSF
+for (y in 1:length(cohort)) {
+  cohort[[y]] <- as.data.frame(cohort[[y]])
+  risk_score <- as.numeric(predict( step_obliqueRSF,cohort[[y]][,key_gene],365*1))
+  
+  risk_score_all <- rbind( risk_score_all,
+                           cbind(algorithm=rep("obliqueRSF",length(risk_score)),
+                                 data=rep(y,length(risk_score)),
+                                 risk_score =risk_score ,
+                                 id=rownames(cohort[[y]]),
+                                 futime= cohort[[y]][,"futime"],
+                                 fustat= cohort[[y]][,"fustat"])
+  )
+}
+step_cforest <- cforest(Surv(futime, fustat) ~.,data = trainset,ntree = 500,mtry = ceiling(sqrt(ncol( trainset)-2)))
+for (y in 1:length(cohort)) {
+  cohort[[y]] <- as.data.frame(cohort[[y]])
+  risk_score <- as.numeric(predict(  step_cforest,cohort[[y]][,key_gene],type = "response"))
+  
+  risk_score_all <- rbind( risk_score_all,
+                           cbind(algorithm=rep("CForest",length(risk_score)),
+                                 data=rep(y,length(risk_score)),
+                                 risk_score =risk_score ,
+                                 id=rownames(cohort[[y]]),
+                                 futime= cohort[[y]][,"futime"],
+                                 fustat= cohort[[y]][,"fustat"])
+  )
+}
+step_glmboost <-glmboost(Surv(futime,fustat) ~ ., data = trainset, family = CoxPH(),
+                         control=boost_control(mstop = 100, nu = 0.1,
+                                               risk = c("inbag", "oobag", "none"), stopintern = FALSE,
+                                               center = TRUE, trace = FALSE)) #glmboost
+for (y in 1:length(cohort)) {
+  cohort[[y]] <- as.data.frame(cohort[[y]])
+  risk_score <- as.numeric(predict( step_glmboost,cohort[[y]][,key_gene],type = "link"))
+  
+  risk_score_all <- rbind( risk_score_all,
+                           cbind(algorithm=rep("GLMboost",length(risk_score)),
+                                 data=rep(y,length(risk_score)),
+                                 risk_score =risk_score ,
+                                 id=rownames(cohort[[y]]),
+                                 futime= cohort[[y]][,"futime"],
+                                 fustat= cohort[[y]][,"fustat"])
+  )
+}
+step_blackboost <-blackboost(Surv(futime,fustat) ~ ., data = trainset, family = CoxPH(),
+                             control=boost_control(mstop = 100, nu = 0.1,
+                                                   risk = c("inbag", "oobag", "none"), stopintern = FALSE,
+                                                   center = TRUE, trace = FALSE)) #blackboost
+for (y in 1:length(cohort)) {
+  cohort[[y]] <- as.data.frame(cohort[[y]])
+  risk_score <- as.numeric(predict(  step_blackboost ,cohort[[y]][,key_gene],type = "link"))
+  
+  risk_score_all <- rbind( risk_score_all,
+                           cbind(algorithm=rep("Blackboost",length(risk_score)),
+                                 data=rep(y,length(risk_score)),
+                                 risk_score =risk_score ,
+                                 id=rownames(cohort[[y]]),
+                                 futime= cohort[[y]][,"futime"],
+                                 fustat= cohort[[y]][,"fustat"])
+  )
+}
+step_rpart <-rpart(Surv(futime, fustat) ~ ., data = trainset,control = rpart.control(minsplit =10, minbucket = round(10/3), cp = 0.01, 
+                                                                                     maxcompete = 4, maxsurrogate = 5, usesurrogate = 2, xval = 10,
+                                                                                     surrogatestyle = 0, maxdepth = 30)) #rpart
+
+for (y in 1:length(cohort)) {
+  cohort[[y]] <- as.data.frame(cohort[[y]])
+  risk_score <- as.numeric(predict(  step_rpart ,cohort[[y]][,key_gene]))
+  
+  risk_score_all <- rbind( risk_score_all,
+                           cbind(algorithm=rep("Rpart",length(risk_score)),
+                                 data=rep(y,length(risk_score)),
+                                 risk_score =risk_score ,
+                                 id=rownames(cohort[[y]]),
+                                 futime= cohort[[y]][,"futime"],
+                                 fustat= cohort[[y]][,"fustat"])
+  )
+}
+step_survreg <-survreg(Surv(futime,fustat) ~ ., data = trainset,control = survreg.control(maxiter=30, rel.tolerance=1e-09, 
+                                                                                          toler.chol=1e-10, iter.max=30, debug=0, outer.max=10)) #survreg
+
+
+for (y in 1:length(cohort)) {
+  cohort[[y]] <- as.data.frame(cohort[[y]])
+  risk_score <- as.numeric(predict(  step_survreg  ,cohort[[y]][,key_gene]))
+  
+  risk_score_all <- rbind( risk_score_all,
+                           cbind(algorithm=rep("SurvReg",length(risk_score)),
+                                 data=rep(y,length(risk_score)),
+                                 risk_score =risk_score ,
+                                 id=rownames(cohort[[y]]),
+                                 futime= cohort[[y]][,"futime"],
+                                 fustat= cohort[[y]][,"fustat"])
+  )
+}
+step_ranger <-ranger(Surv(futime, fustat) ~ ., data =trainset,  num.trees =1000,mtry =  ceiling(sqrt(ncol(trainset) - 2)),min.node.size = 5)
+for (y in 1:length(cohort)) {
+  cohort[[y]] <- as.data.frame(cohort[[y]])
+  risk_score <- as.numeric(predict(
+    step_ranger ,
+    data =cohort[[y]][,key_gene], type = "response")$survival[,ncol(predict(
+      step_ranger ,
+      data =cohort[[y]][,key_gene], type = "response")$survival)])
+  
+  risk_score_all <- rbind( risk_score_all,
+                           cbind(algorithm=rep("Ranger",length(risk_score)),
+                                 data=rep(y,length(risk_score)),
+                                 risk_score =risk_score ,
+                                 id=rownames(cohort[[y]]),
+                                 futime= cohort[[y]][,"futime"],
+                                 fustat= cohort[[y]][,"fustat"])
+  )
+}
+step_ctree <-  ctree(Surv(futime, fustat) ~ ., data = trainset,  control = ctree_control(teststat = c("quadratic", "maximum"),
+                                                                                         splitstat = c("quadratic", "maximum"),
+                                                                                         splittest = FALSE,
+                                                                                         testtype = c("Bonferroni", "MonteCarlo", "Univariate", "Teststatistic"),
+                                                                                         pargs = GenzBretz(),
+                                                                                         nmax = c(yx = Inf, z = Inf), alpha = 0.05, mincriterion = 0.95,
+                                                                                         logmincriterion = log(0.95), minsplit = 20L, minbucket = 7L,
+                                                                                         minprob = 0.01, stump = FALSE, maxvar = Inf, lookahead = FALSE, 
+                                                                                         MIA = FALSE, nresample = 9999L,
+                                                                                         tol = sqrt(.Machine$double.eps),maxsurrogate = 0L, numsurrogate = FALSE,
+                                                                                         mtry = Inf, maxdepth = Inf,
+                                                                                         multiway = FALSE, splittry = 2L, intersplit = FALSE, majority = FALSE,
+                                                                                         caseweights = TRUE, applyfun = NULL, cores = NULL, saveinfo = TRUE,
+                                                                                         update = NULL, splitflavour = c("ctree", "exhaustive")))
+for (y in 1:length(cohort)) {
+  cohort[[y]] <- as.data.frame(cohort[[y]])
+  risk_score <- as.numeric(predict(step_ctree  ,cohort[[y]][,key_gene]))
+  
+  risk_score_all <- rbind( risk_score_all,
+                           cbind(algorithm=rep("Ctree",length(risk_score)),
+                                 data=rep(y,length(risk_score)),
+                                 risk_score =risk_score ,
+                                 id=rownames(cohort[[y]]),
+                                 futime= cohort[[y]][,"futime"],
+                                 fustat= cohort[[y]][,"fustat"])
+  )
+}
+x=as.matrix(trainset[,key_gene])
+y=data.matrix(Surv(trainset$futime,trainset$fustat))
+fit=glmnet(x, y, family = "cox", maxit = 10000,nfolds = 10)
+cvfit=cv.glmnet(x, y, family="cox", maxit = 10000,nfolds = 10)
+coef=coef(fit, s = cvfit$lambda.min)
+index=which(coef != 0)
+actCoef=coef[index]
+lassoGene=row.names(coef)[index]
+geneCoef=cbind(Gene=lassoGene,Coef=actCoef)
+myFun=function(x){crossprod(as.numeric(x),actCoef)}
+for (y in 1:length(cohort)) {
+  cohort[[y]] <- as.data.frame(cohort[[y]])
+  risk_score <- as.numeric(apply(  cohort[[y]][,lassoGene],1,myFun))
+  
+  risk_score_all <- rbind( risk_score_all,
+                           cbind(algorithm=rep("LASSO",length(risk_score)),
+                                 data=rep(y,length(risk_score)),
+                                 risk_score =risk_score ,
+                                 id=rownames(cohort[[y]]),
+                                 futime= cohort[[y]][,"futime"],
+                                 fustat= cohort[[y]][,"fustat"])
+  )
+}
+pen <- optimCoxBoostPenalty(trainset[,'futime'],trainset[,'fustat'],as.matrix(trainset[,key_gene]),
+                            trace=TRUE,start.penalty=500,parallel = F)
+cv.res <- cv.CoxBoost(trainset[,'futime'],trainset[,'fustat'],as.matrix(trainset[,key_gene]),
+                      maxstepno=500,K=10,type="verweij",penalty=pen$penalty)
+
+fit <- CoxBoost(trainset[,'futime'],trainset[,'fustat'],as.matrix(trainset[,key_gene]),
+                stepno=cv.res$optimal.step,penalty=pen$penalty)
+
+for (y in 1:length(cohort)) {
+  cohort[[y]] <- as.data.frame(cohort[[y]])
+  risk_score <- as.numeric(predict(fit,newdata=cohort[[y]][,key_gene], newtime=cohort[[y]][,"futime"], newstatus=pender[,"fustat"], type="lp"))
+  
+  risk_score_all <- rbind( risk_score_all,
+                           cbind(algorithm=rep("Coxboost",length(risk_score)),
+                                 data=rep(y,length(risk_score)),
+                                 risk_score =risk_score ,
+                                 id=rownames(cohort[[y]]),
+                                 futime= cohort[[y]][,"futime"],
+                                 fustat= cohort[[y]][,"fustat"])
+  )
+}
+cv.plsRcox.res=cv.plsRcox(list(x=trainset[,key_gene],time=trainset$futime,status=trainset$fustat),nt=10,verbose = FALSE)
+fit <- plsRcox(trainset[,key_gene],time=trainset$futime,event=trainset$fustat,nt=as.numeric(cv.plsRcox.res[5]))
+for (y in 1:length(cohort)) {
+  cohort[[y]] <- as.data.frame(cohort[[y]])
+  risk_score <- as.numeric(predict(fit,type="lp",newdata=cohort[[y]][,key_gene]))
+  
+  risk_score_all <- rbind( risk_score_all,
+                           cbind(algorithm=rep("PLSRcox",length(risk_score)),
+                                 data=rep(y,length(risk_score)),
+                                 risk_score =risk_score ,
+                                 id=rownames(cohort[[y]]),
+                                 futime= cohort[[y]][,"futime"],
+                                 fustat= cohort[[y]][,"fustat"])
+  )
+}
+survsvm.reg <- survivalsvm(Surv(futime,fustat) ~ .,data = trainset[,c("futime","fustat",key_gene)] ,
+                           type = "regression", gamma.mu = 1,
+                           opt.meth = "quadprog", kernel = "lin_kernel")
+for (y in 1:length(cohort)) {
+  cohort[[y]] <- as.data.frame(cohort[[y]])
+  risk_score <- as.numeric(predict(object = survsvm.reg, 
+                                   newdata = cohort[[y]][,key_gene])$predicted)
+  
+  risk_score_all <- rbind( risk_score_all,
+                           cbind(algorithm=rep("SVM (lin kernel)",length(risk_score)),
+                                 data=rep(y,length(risk_score)),
+                                risk_score =risk_score ,
+                                 id=rownames(cohort[[y]]),
+                                futime= cohort[[y]][,"futime"],
+                                 fustat= cohort[[y]][,"fustat"])
+  )
+}
+
+survsvm.reg <- survivalsvm(Surv(futime,fustat) ~ .,data = trainset[,c("futime","fustat",key_gene)] ,
+                           type = "regression", gamma.mu = 1,
+                           opt.meth = "quadprog", kernel = "add_kernel")
+for (y in 1:length(cohort)) {
+  cohort[[y]] <- as.data.frame(cohort[[y]])
+  risk_score <- as.numeric(predict(object = survsvm.reg, 
+                                   newdata = cohort[[y]][,key_gene])$predicted)
+  
+  risk_score_all <- rbind( risk_score_all,
+                           cbind(algorithm=rep("SVM (add_kernel)",length(risk_score)),
+                                 data=rep(y,length(risk_score)),
+                                 risk_score =risk_score ,
+                                 id=rownames(cohort[[y]]),
+                                 futime= cohort[[y]][,"futime"],
+                                 fustat= cohort[[y]][,"fustat"])
+  )
+}
+survsvm.reg <- survivalsvm(Surv(futime,fustat) ~ .,data = trainset[,c("futime","fustat",key_gene)] ,
+                           type = "regression", gamma.mu = 1,
+                           opt.meth = "quadprog", kernel = "rbf_kernel")
+for (y in 1:length(cohort)) {
+  cohort[[y]] <- as.data.frame(cohort[[y]])
+  risk_score <- as.numeric(predict(object = survsvm.reg, 
+                                   newdata = cohort[[y]][,key_gene])$predicted)
+  
+  risk_score_all <- rbind( risk_score_all,
+                           cbind(algorithm=rep("SVM (rbf_kernel)",length(risk_score)),
+                                 data=rep(y,length(risk_score)),
+                                 risk_score =risk_score ,
+                                 id=rownames(cohort[[y]]),
+                                 futime= cohort[[y]][,"futime"],
+                                 fustat= cohort[[y]][,"fustat"])
+  )
+}
+x1 <- as.matrix(trainset[,key_gene])
+x2 <- as.matrix(Surv(trainset$futime,trainset$fustat))
+for (y in 1:length(cohort)) {
+  for (alpha in seq(0,1,0.1)) {
+    
+    fit = cv.glmnet(x1, x2,family = "cox",alpha=alpha,nfolds = 10)
+    risk_score <- as.numeric(predict(fit,type='link',newx=as.matrix(cohort[[y]][,key_gene]),s=fit$lambda.min))
+    risk_score_all <- rbind( risk_score_all,
+                             cbind(algorithm=rep(paste("Enet",paste0("alpha=",alpha),collapse = " "),length(risk_score)),
+                                   data=rep(y,length(risk_score)),
+                                   risk_score =risk_score ,
+                                   id=rownames(cohort[[y]]),
+                                   futime= cohort[[y]][,"futime"],
+                                   fustat= cohort[[y]][,"fustat"])
+    )
+    
+  }
+}
+x=as.matrix(trainset[,key_gene])
+y=data.matrix(Surv(trainset$futime,trainset$fustat))
+fit=glmnet(x, y, family = "cox", maxit = 10000, alpha = 0,nfolds = 10)
+cvfit=cv.glmnet(x, y, family="cox", maxit = 10000,alpha=0,nfolds = 10)
+for (y in 1:length(cohort)) {
+  cohort[[y]] <- as.data.frame(cohort[[y]])
+  risk_score <- as.numeric(predict(fit, s = cvfit$lambda.min,newx = as.matrix(cohort[[y]][,key_gene])))
+  
+  risk_score_all <- rbind( risk_score_all,
+                           cbind(algorithm=rep("Ridge",length(risk_score)),
+                                 data=rep(y,length(risk_score)),
+                                 risk_score =risk_score ,
+                                 id=rownames(cohort[[y]]),
+                                 futime= cohort[[y]][,"futime"],
+                                 fustat= cohort[[y]][,"fustat"])
+  )
+}
+fit <- deephit(Surv(futime, fustat) ~ ., data = trainset)
+for (y in 1:length(cohort)) {
+  cohort[[y]] <- as.data.frame(cohort[[y]])
+  risk_score <-  as.numeric( predict( fit ,cohort[[y]][,key_gene],type="risk"))
+  
+  risk_score_all <- rbind( risk_score_all,
+                           cbind(algorithm=rep("Deephit",length(risk_score)),
+                                 data=rep(y,length(risk_score)),
+                                 risk_score =risk_score ,
+                                 id=rownames(cohort[[y]]),
+                                 futime= cohort[[y]][,"futime"],
+                                 fustat= cohort[[y]][,"fustat"])
+  )
+}
+fit <- deepsurv(Surv(futime, fustat) ~ ., data = trainset)
+for (y in 1:length(cohort)) {
+  cohort[[y]] <- as.data.frame(cohort[[y]])
+  risk_score <-  as.numeric( predict( fit ,cohort[[y]][,key_gene],type="risk"))
+  
+  risk_score_all <- rbind( risk_score_all,
+                           cbind(algorithm=rep("Deepsurv",length(risk_score)),
+                                 data=rep(y,length(risk_score)),
+                                 risk_score =risk_score ,
+                                 id=rownames(cohort[[y]]),
+                                 futime= cohort[[y]][,"futime"],
+                                 fustat= cohort[[y]][,"fustat"])
+  )
+}
+fit <- coxtime(Surv(futime, fustat) ~ ., data = trainset)
+for (y in 1:length(cohort)) {
+  cohort[[y]] <- as.data.frame(cohort[[y]])
+  risk_score <-  as.numeric( predict( fit ,cohort[[y]][,key_gene],type="risk"))
+  
+  risk_score_all <- rbind( risk_score_all,
+                           cbind(algorithm=rep("Coxtime",length(risk_score)),
+                                 data=rep(y,length(risk_score)),
+                                 risk_score =risk_score ,
+                                 id=rownames(cohort[[y]]),
+                                 futime= cohort[[y]][,"futime"],
+                                 fustat= cohort[[y]][,"fustat"])
+  )
+}
+fit <- loghaz(Surv(futime, fustat) ~ ., data =trainset)
+for (y in 1:length(cohort)) {
+  cohort[[i]] <- as.data.frame(cohort[[i]])
+  risk_score <-  as.numeric( predict( fit ,cohort[[i]][,key_gene],type="risk"))
+  
+  risk_score_all <- rbind( risk_score_all,
+                           cbind(algorithm=rep("Logistic-Hazard",length(risk_score)),
+                                 data=rep(y,length(risk_score)),
+                                 risk_score =risk_score ,
+                                 id=rownames(cohort[[y]]),
+                                 futime= cohort[[y]][,"futime"],
+                                 fustat= cohort[[y]][,"fustat"])
+  )
+}
+
+fit <- pchazard(Surv(futime, fustat) ~ ., data =trainset)
+for (y in 1:length(cohort)) {
+  cohort[[i]] <- as.data.frame(cohort[[i]])
+  risk_score <-  as.numeric( predict( fit ,cohort[[i]][,key_gene],type="risk"))
+  
+  risk_score_all <- rbind( risk_score_all,
+                           cbind(algorithm=rep("PC-Hazard",length(risk_score)),
+                                 data=rep(y,length(risk_score)),
+                                 risk_score =risk_score ,
+                                 id=rownames(cohort[[y]]),
+                                 futime= cohort[[y]][,"futime"],
+                                 fustat= cohort[[y]][,"fustat"])
+  )
+}
+
+
+xgb_model <- xgboost(data = as.matrix(trainset[,key_gene]), label = ifelse(trainset$fustat==1,trainset$futime,-trainset$futime), nrounds = 1000, objective = "survival:cox", eta = 0.05 )
+for (y in 1:length(cohort)) {
+  cohort[[y]] <- as.data.frame(cohort[[y]])
+  risk_score <-  as.numeric( predict( xgb_model,as.matrix(cohort[[y]][,key_gene])[,key_gene]))
+  
+  risk_score_all <- rbind( risk_score_all,
+                           cbind(algorithm=rep("XGBoost",length(risk_score)),
+                                 data=rep(y,length(risk_score)),
+                                 risk_score =risk_score ,
+                                 id=rownames(cohort[[y]]),
+                                 futime= cohort[[y]][,"futime"],
+                                 fustat= cohort[[y]][,"fustat"])
+  )
+}
+return(risk_score_all)
+}
